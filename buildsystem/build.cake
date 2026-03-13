@@ -49,7 +49,7 @@ Task("Package-windows-classic-nightly")
     .IsDependentOn("Clean")
     .IsDependentOn("Download-win32-nightly")
     .IsDependentOn("Download-win64-nightly")
-    .IsDependentOn("Download-arm64-nightly")
+    .IsDependentOn("Download-win64-arm-nightly")
     .Does(() =>
 {
     CreateNuGetPackage();
@@ -68,7 +68,7 @@ Task("Download-win64-nightly")
     await DownloadArtifact("win64-llvm");
 });
 
-Task("Download-arm64-nightly")
+Task("Download-win64-arm-nightly")
     .IsDependentOn("Clean")
     .Does(async () =>
 {
