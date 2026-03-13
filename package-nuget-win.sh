@@ -4,12 +4,14 @@ set -e
 version=${1:?"Usage: $0 <libvlc version>"}
 downloadUrlx86="https://get.videolan.org/vlc/$version/win32/vlc-$version-win32.7z"
 downloadUrlx64="https://get.videolan.org/vlc/$version/win64/vlc-$version-win64.7z"
+downloadUrlArm64="https://get.videolan.org/vlc/$version/winarm64/vlc-$version-winarm64.7z"
 
 packageName="VideoLAN.LibVLC.Windows"
 packageNameGPL="VideoLAN.LibVLC.Windows.GPL"
 
 x86PluginsLocation="build/win7-x86/native/plugins"
 x64PluginsLocation="build/win7-x64/native/plugins"
+arm64PluginsLocation="build/win-arm64/native/plugins"
 
 # GPL plugin list
 gpl_plugins=(
@@ -56,6 +58,9 @@ curl -Lsfo x86.7z $downloadUrlx86
 # echo "downloading x64 binaries..." $downloadUrlx64
 curl -Lsfo x64.7z $downloadUrlx64
 
+# echo "downloading arm64 binaries..." $downloadUrlArm64
+curl -Lsfo arm64.7z $downloadUrlArm64
+
 if [ ! -f "nuget.exe" ]; then
   echo "downloading NuGet..."
   curl -Lsfo nuget.exe https://dist.nuget.org/win-x86-commandline/latest/nuget.exe
@@ -64,6 +69,7 @@ fi
 echo "unzipping vlc..."
 7z x x86.7z -o./x86
 7z x x64.7z -o./x64
+7z x arm64.7z -o./arm64
 
 echo "copying x86 dlls, libs and headers files..."
 rm -rf build/win7-x86/native/
@@ -78,6 +84,12 @@ mkdir -p build/win7-x64/native/
 cp -R ./x64/vlc-$version/{libvlc.dll,libvlccore.dll,hrtfs,lua,plugins} build/win7-x64/native/
 cp ./x64/vlc-$version/sdk/lib/{libvlc.lib,libvlccore.lib,vlc.lib,vlccore.lib} build/win7-x64/native/
 cp -R ./x64/vlc-$version/sdk/include build/win7-x64/native/
+
+echo "copying arm64 dlls, libs and headers files..."
+mkdir -p build/win-arm64/native/
+cp -R ./arm64/vlc-$version/{libvlc.dll,libvlccore.dll,hrtfs,lua,plugins} build/win-arm64/native/
+cp ./arm64/vlc-$version/sdk/lib/{libvlc.lib,libvlccore.lib,vlc.lib,vlccore.lib} build/win-arm64/native/
+cp -R ./arm64/vlc-$version/sdk/include build/win-arm64/native/
 
 echo "packaging GPL version..."
 
@@ -97,6 +109,13 @@ for file in "${gpl_plugins[@]}"; do
   rm -rf "$x64PluginsLocation/$file"
 done
 
+echo "removing GPL plugins from arm64..."
+
+# remove arm64 GPL plugins
+for file in "${gpl_plugins[@]}"; do
+  rm -rf "$arm64PluginsLocation/$file"
+done
+
 echo "packaging LGPL version..."
 
 mono nuget.exe pack "$packageName".nuspec -Version "$version"
@@ -106,5 +125,7 @@ rm ./x86.7z
 rm -rf ./x86
 rm ./x64.7z
 rm -rf ./x64
+rm ./arm64.7z
+rm -rf ./arm64
 
 echo "done"
