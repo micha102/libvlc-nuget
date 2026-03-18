@@ -8,16 +8,33 @@ jobs:
   LibVLC_iOS_NuGet:
     if: github.event_name == 'push' || github.event.pull_request.head.repo.id != github.event.pull_request.base.repo.id
     runs-on: macos-latest
-    env:
-      VLCKIT_TAG: 3.6.1b1
-      IOS_NUGET: 3.6.1
     steps:
       - name: Checkout
         uses: actions/checkout@v2 
+      - name: Detect latest VLCKit 3.x tag
+        shell: bash
+        run: |
+          # Get the latest 3.x tag from vlckit repo
+          LATEST_TAG=$(git ls-remote --tags https://github.com/videolan/vlckit.git \
+                       | grep -o 'refs/tags/3\.[0-9]\+\.[0-9]\+[a-z0-9]*$' \
+                       | sed 's|refs/tags/||' \
+                       | sort -V \
+                       | tail -n1)
+      
+          echo "Detected VLCKIT_TAG: $LATEST_TAG"
+      
+          # Extract clean version for IOS_NUGET (strip trailing letters like 'b1')
+          IOS_NUGET=$(echo "$LATEST_TAG" | sed 's/[a-zA-Z].*$//')
+      
+          echo "IOS_NUGET=$IOS_NUGET"
+          echo "VLCKIT_TAG=$LATEST_TAG"
+      
+          # Export to GitHub environment for downstream steps
+          echo "IOS_NUGET=$IOS_NUGET" >> $GITHUB_ENV
+          echo "VLCKIT_TAG=$LATEST_TAG" >> $GITHUB_ENV
       - name: LibVLC iOS build
         shell: bash
         run: |
-          TAG="3.6.1b1"
           git clone https://github.com/videolan/vlckit
           cd vlckit
           git checkout "tags/$VLCKIT_TAG"
@@ -51,6 +68,9 @@ jobs:
         uses: nuget/setup-nuget@v1
         with:
           nuget-version: '5.x'
+      - name: Install Mono
+        run: |
+          brew install mono
       - name: Create LibVLC iOS NuGet package
         run: |
           nuget pack VideoLAN.LibVLC.iOS.nuspec -Version "${IOS_NUGET}"
@@ -65,40 +85,58 @@ jobs:
     strategy:
       matrix:
         arch: [x64, x86, arm]
-    runs-on: windows-2019
+    runs-on: windows-latest
+    env:
+      WIN_SDK_BUILD: 19041
+      PLATFORM_TOOLSET: v143
     steps:
       - name: Checkout libvlc uwp access module code
         shell: bash
         run: |
           git clone https://code.videolan.org/mfkl/vlc-winrt && cd vlc-winrt && git checkout uwp-access-v3
           mkdir -p libvlc/Universal/vlc-${{ matrix.arch }}/Release
+  
       - name: Download VLC headers
-        uses: azure/powershell@v1
-        with:
-          inlineScript: |
-            Invoke-WebRequest -Uri "https://code.videolan.org/videolan/vlc/-/archive/3.0.x/vlc-3.0.x.zip" -OutFile "vlc-3.0.x.zip"
-          azPSVersion : '3.1.0'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://code.videolan.org/videolan/vlc/-/archive/3.0.x/vlc-3.0.x.zip" -OutFile "vlc-3.0.x.zip"
+  
       - name: Extract LibVLC
         shell: bash
         run: | 
           7z x vlc-3.0.x.zip -ovlc
           mv vlc/vlc-3.0.x/include vlc-winrt/libvlc/Universal/vlc-${{ matrix.arch }}/Release
+  
       - name: Add msbuild to PATH
         uses: microsoft/setup-msbuild@v1.0.3
+      - name: Setup Windows SDK
+        uses: fbactions/setup-winsdk@v2
+        with:
+          winsdk-build-version: ${{ env.WIN_SDK_BUILD }}
       - name: MSBuild x64/ARM
         if: matrix.arch != 'x86'
         working-directory: vlc-winrt/modules/libaccess_winrt_plugin.UWP
-        run: msbuild libaccess_winrt_plugin.UWP.vcxproj /p:Configuration=Release /p:Platform=${{ matrix.arch }}
+        run: |
+          msbuild libaccess_winrt_plugin.UWP.vcxproj `
+            /p:Configuration=Release `
+            /p:Platform=${{ matrix.arch }} `
+            /p:WindowsTargetPlatformVersion=10.0.${{ env.WIN_SDK_BUILD }}.0 `
+            /p:PlatformToolset=${{ env.PLATFORM_TOOLSET }}
+  
       - name: MSBuild x86
         if: matrix.arch == 'x86'
         working-directory: vlc-winrt/modules/libaccess_winrt_plugin.UWP
-        run: msbuild libaccess_winrt_plugin.UWP.vcxproj /p:Configuration=Release /p:Platform=Win32
+        run: |
+          msbuild libaccess_winrt_plugin.UWP.vcxproj `
+            /p:Configuration=Release `
+            /p:Platform=Win32 `
+            /p:WindowsTargetPlatformVersion=10.0.${{ env.WIN_SDK_BUILD }}.0 `
+            /p:PlatformToolset=${{ env.PLATFORM_TOOLSET }}
       - name: Upload build
         uses: actions/upload-artifact@v4
         with:
           name: libvlc-uwp-access-build-${{ matrix.arch }}
           path: vlc-winrt/modules/libaccess_winrt_plugin.UWP/Release/libaccess_winrt_plugin.UWP
-  
   UWP_NuGet:
     if: github.event_name == 'push' || github.event.pull_request.head.repo.id != github.event.pull_request.base.repo.id
     runs-on: ubuntu-latest
@@ -106,6 +144,9 @@ jobs:
     steps:
       - uses: actions/checkout@v2
       - uses: actions/download-artifact@v4
+      - name: Install minimal Mono for NuGet
+        run: |
+          sudo apt-get install -y mono-complete
       - uses: NuGet/setup-nuget@v1.2.0
         with:
           nuget-version: '5.x'
@@ -116,8 +157,6 @@ jobs:
           mkdir -p build/win10-x64/native
           mkdir -p build/win10-x86/native
       - name: Download and extract UWP builds
-        env:
-          VLC_VERSION: 3.0.20
         shell: bash
         run: |
           wget -O arm.zip https://code.videolan.org/videolan/libvlc-nuget/-/jobs/artifacts/master/download?job=uwp-arm
@@ -125,8 +164,9 @@ jobs:
           wget -O x64.zip https://code.videolan.org/videolan/libvlc-nuget/-/jobs/artifacts/master/download?job=uwp-x64
 
           7z x arm.zip -oarm -y
+          VLC_VERSION=$(ls arm/vlc/winarm-uwp/vlc-*-win32.7z | head -n1 | sed -E 's#.*/vlc-(.*)-win32\.7z#\1#')
+          echo "VLC_VERSION=$VLC_VERSION" >> $GITHUB_ENV
           7z x arm/vlc/winarm-uwp/vlc-$VLC_VERSION-win32.7z -oarm/vlc/winarm-uwp -y
-
           7z x x86.zip -ox86 -y
           7z x x86/vlc/win32-uwp/vlc-$VLC_VERSION-win32.7z -ox86/vlc/win32-uwp -y
 
@@ -156,9 +196,165 @@ jobs:
       - name: Package NuGet
         shell: bash
         run: |
-          nuget pack VideoLAN.LibVLC.UWP.nuspec
+          nuget pack VideoLAN.LibVLC.UWP.nuspec -Version $VLC_VERSION
       - name: Upload NuGet package
         uses: actions/upload-artifact@v4
         with:
           name: libvlc-uwp
           path: '*.nupkg'
+
+  Windows_NuGet:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+  
+      - name: Detect latest VLC version
+        shell: pwsh
+        run: |
+          $url = "https://download.videolan.org/vlc/last/"
+          Write-Host "Fetching VLC latest version from $url"
+  
+          # Use curl to download the HTML
+          $content = curl -s $url | Out-String
+  
+          # Extract first vlc-x.y.z.tar.xz match
+          if ($content -match 'vlc-([0-9]+\.[0-9]+\.[0-9]+)\.tar\.xz') {
+              $version = $matches[1]
+              Write-Host "Detected version: $version"
+  
+              # Export to GitHub environment
+              "VLC_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          } else {
+              throw "Failed to detect VLC version"
+          }
+  
+      - name: Ensure 7-Zip is available
+        shell: pwsh
+        run: |
+          if (-not (Get-Command 7z -ErrorAction SilentlyContinue)) {
+            choco install 7zip -y
+          }
+  
+      - name: Download VLC binaries
+        shell: pwsh
+        run: |
+          Write-Host "== Download VLC binaries =="
+          $v = $env:VLC_VERSION
+  
+          curl -L -o x86.7z  "https://get.videolan.org/vlc/$v/win32/vlc-$v-win32.7z"
+          curl -L -o x64.7z  "https://get.videolan.org/vlc/$v/win64/vlc-$v-win64.7z"
+          curl -L -o arm64.7z "https://get.videolan.org/vlc/$v/winarm64/vlc-$v-winarm64.7z"
+  
+      - name: Download NuGet
+        shell: pwsh
+        run: |
+          if (!(Test-Path "nuget.exe")) {
+              curl -L -o nuget.exe https://dist.nuget.org/win-x86-commandline/latest/nuget.exe
+          }
+  
+      - name: Extract VLC archives
+        shell: pwsh
+        run: |
+          Write-Host "== Extract archives =="
+          7z x x86.7z -ox86 | Out-Null
+          7z x x64.7z -ox64 | Out-Null
+          7z x arm64.7z -oarm64 | Out-Null
+  
+      - name: Prepare architectures
+        shell: pwsh
+        run: |
+          function Prepare-Arch($arch, $srcFolder, $dstFolder) {
+              Write-Host "== Prepare $arch =="
+  
+              Remove-Item $dstFolder -Recurse -Force -ErrorAction SilentlyContinue
+              New-Item -ItemType Directory -Force -Path $dstFolder | Out-Null
+  
+              Copy-Item "$srcFolder/libvlc.dll" $dstFolder
+              Copy-Item "$srcFolder/libvlccore.dll" $dstFolder
+              Copy-Item "$srcFolder/hrtfs" $dstFolder -Recurse
+              Copy-Item "$srcFolder/lua" $dstFolder -Recurse
+              Copy-Item "$srcFolder/plugins" $dstFolder -Recurse
+  
+              Copy-Item "$srcFolder/sdk/lib/*.lib" $dstFolder
+              Copy-Item "$srcFolder/sdk/include" $dstFolder -Recurse
+          }
+  
+          Prepare-Arch "x86"   "x86/vlc-$env:VLC_VERSION"   "build/win7-x86/native"
+          Prepare-Arch "x64"   "x64/vlc-$env:VLC_VERSION"   "build/win7-x64/native"
+          Prepare-Arch "arm64" "arm64/vlc-$env:VLC_VERSION" "build/win-arm64/native"
+  
+      - name: Pack GPL NuGet package
+        shell: pwsh
+        run: |
+          .\nuget.exe pack VideoLAN.LibVLC.Windows.GPL.nuspec -Version $env:VLC_VERSION
+  
+      - name: Remove GPL plugins
+        shell: pwsh
+        run: |
+          $GPL_PLUGINS = @(
+            "access/libaccess_realrtsp_plugin.dll",
+            "access/libdvdnav_plugin.dll",
+            "access/libdvdread_plugin.dll",
+            "access/libvnc_plugin.dll",
+            "access/libdshow_plugin.dll",
+            "audio_filter/libmad_plugin.dll",
+            "audio_filter/libmono_plugin.dll",
+            "audio_filter/libsamplerate_plugin.dll",
+            "codec/liba52_plugin.dll",
+            "codec/libaribsub_plugin.dll",
+            "codec/libdca_plugin.dll",
+            "codec/libfaad_plugin.dll",
+            "codec/liblibmpeg2_plugin.dll",
+            "codec/libt140_plugin.dll",
+            "codec/libx264_plugin.dll",
+            "codec/libx265_plugin.dll",
+            "control",
+            "demux/libmpc_plugin.dll",
+            "demux/libreal_plugin.dll",
+            "demux/libsid_plugin.dll",
+            "gui",
+            "logger/libfile_logger_plugin.dll",
+            "misc/libaudioscrobbler_plugin.dll",
+            "misc/libexport_plugin.dll",
+            "misc/liblogger_plugin.dll",
+            "misc/libstats_plugin.dll",
+            "misc/libvod_rtsp_plugin.dll",
+            "packetizer/libpacketizer_a52_plugin.dll",
+            "services_discovery/libmediadirs_plugin.dll",
+            "services_discovery/libpodcast_plugin.dll",
+            "services_discovery/libsap_plugin.dll",
+            "stream_out/libstream_out_cycle_plugin.dll",
+            "stream_out/libstream_out_rtp_plugin.dll",
+            "video_filter/libpostproc_plugin.dll",
+            "video_filter/librotate_plugin.dll"
+          )
+  
+          $ARCHES = @("win7-x86", "win7-x64", "win-arm64")
+  
+          foreach ($arch in $ARCHES) {
+              foreach ($file in $GPL_PLUGINS) {
+                  $target = "build/$arch/native/plugins/$file"
+                  if (Test-Path $target) {
+                      Write-Host "Removing $target"
+                      Remove-Item $target -Recurse -Force
+                  }
+              }
+          }
+  
+      - name: Pack LGPL NuGet package
+        shell: pwsh
+        run: |
+          .\nuget.exe pack VideoLAN.LibVLC.Windows.nuspec -Version $env:VLC_VERSION
+  
+      - name: Cleanup
+        shell: pwsh
+        run: |
+          Remove-Item x86,x64,arm64 -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item *.7z -Force -ErrorAction SilentlyContinue
+  
+      - name: Upload NuGet packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: libvlc-windows
+          path: "*.nupkg"
