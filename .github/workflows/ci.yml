@@ -96,16 +96,15 @@ jobs:
           git clone https://code.videolan.org/mfkl/vlc-winrt && cd vlc-winrt && git checkout uwp-access-v3
           mkdir -p libvlc/Universal/vlc-${{ matrix.arch }}/Release
   
-      - name: Download VLC headers
-        shell: pwsh
-        run: |
-          Invoke-WebRequest -Uri "https://code.videolan.org/videolan/vlc/-/archive/3.0.x/vlc-3.0.x.zip" -OutFile "vlc-3.0.x.zip"
-  
-      - name: Extract LibVLC
+      - name: Clone VLC (3.0.x branch)
         shell: bash
-        run: | 
-          7z x vlc-3.0.x.zip -ovlc
-          mv vlc/vlc-3.0.x/include vlc-winrt/libvlc/Universal/vlc-${{ matrix.arch }}/Release
+        run: |
+          git clone --depth 1 --branch 3.0.x https://code.videolan.org/videolan/vlc.git vlc
+  
+      - name: Move LibVLC headers
+        shell: bash
+        run: |
+          mv vlc/include vlc-winrt/libvlc/Universal/vlc-${{ matrix.arch }}/Release
   
       - name: Add msbuild to PATH
         uses: microsoft/setup-msbuild@v1.0.3
@@ -289,58 +288,28 @@ jobs:
         run: |
           .\nuget.exe pack VideoLAN.LibVLC.Windows.GPL.nuspec -Version $env:VLC_VERSION
   
-      - name: Remove GPL plugins
-        shell: pwsh
+      - name: Remove GPL plugins (shared list)
+        shell: bash
         run: |
-          $GPL_PLUGINS = @(
-            "access/libaccess_realrtsp_plugin.dll",
-            "access/libdvdnav_plugin.dll",
-            "access/libdvdread_plugin.dll",
-            "access/libvnc_plugin.dll",
-            "access/libdshow_plugin.dll",
-            "audio_filter/libmad_plugin.dll",
-            "audio_filter/libmono_plugin.dll",
-            "audio_filter/libsamplerate_plugin.dll",
-            "codec/liba52_plugin.dll",
-            "codec/libaribsub_plugin.dll",
-            "codec/libdca_plugin.dll",
-            "codec/libfaad_plugin.dll",
-            "codec/liblibmpeg2_plugin.dll",
-            "codec/libt140_plugin.dll",
-            "codec/libx264_plugin.dll",
-            "codec/libx265_plugin.dll",
-            "control",
-            "demux/libmpc_plugin.dll",
-            "demux/libreal_plugin.dll",
-            "demux/libsid_plugin.dll",
-            "gui",
-            "logger/libfile_logger_plugin.dll",
-            "misc/libaudioscrobbler_plugin.dll",
-            "misc/libexport_plugin.dll",
-            "misc/liblogger_plugin.dll",
-            "misc/libstats_plugin.dll",
-            "misc/libvod_rtsp_plugin.dll",
-            "packetizer/libpacketizer_a52_plugin.dll",
-            "services_discovery/libmediadirs_plugin.dll",
-            "services_discovery/libpodcast_plugin.dll",
-            "services_discovery/libsap_plugin.dll",
-            "stream_out/libstream_out_cycle_plugin.dll",
-            "stream_out/libstream_out_rtp_plugin.dll",
-            "video_filter/libpostproc_plugin.dll",
-            "video_filter/librotate_plugin.dll"
+          set -e
+          # Extract GPL plugin list from script
+          mapfile -t GPL_PLUGINS < <(
+            awk '/gpl_plugins=\(/,/\)/' package-nuget-win.sh \
+            | sed '1d;$d' \
+            | sed 's/^[[:space:]]*"\(.*\)"/\1/'
           )
-  
-          $ARCHES = @("win7-x86", "win7-x64", "win-arm64")
-  
-          foreach ($arch in $ARCHES) {
-              foreach ($file in $GPL_PLUGINS) {
-                  $target = "build/$arch/native/plugins/$file"
-                  if (Test-Path $target) {
-                      Write-Host "Removing $target"
-                      Remove-Item $target -Recurse -Force
-                  }
-              }
-          }
+      
+          ARCHES=("win7-x86" "win7-x64" "win-arm64")
+      
+          for arch in "${ARCHES[@]}"; do
+            for file in "${GPL_PLUGINS[@]}"; do
+              target="build/$arch/native/plugins/$file"
+              if [ -e "$target" ]; then
+                echo "Removing $target"
+                rm -rf "$target"
+              fi
+            done
+          done
   
       - name: Pack LGPL NuGet package
         shell: pwsh
